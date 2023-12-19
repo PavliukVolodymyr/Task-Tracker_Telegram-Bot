@@ -3,6 +3,7 @@ from telebot import types
 import concurrent.futures
 from flask import Flask, request, jsonify
 import requests
+import sqlite3
 
 bot_token = '6553192435:AAH79hmvkIbfz3Wj2uS3rk8ppsKRt_BqgO8'
 bot = telebot.TeleBot(bot_token)
@@ -22,7 +23,7 @@ def send_welcome(message):
     markup.add(item)
 
     # Відправлення повідомлення з inline клавіатурою
-    bot.send_message(message.chat.id, "Привіт! Я твій телеграм-бот.", reply_markup=markup)
+    bot.send_message(message.chat.id, "Привіт! Я твій телеграм-бот для отримання завдань з Task trecker. Для початку треба авторизуватися", reply_markup=markup)
 
 # Обробник для натискання inline кнопки "Авторизація"
 @bot.callback_query_handler(func=lambda call: call.data == 'auth_button')
@@ -75,7 +76,25 @@ def handle_auth_response(chat_id, response):
         # Успішна авторизація, обробити токени та відповідні дії
         access_token = response.get('access_token', '')
         refresh_token = response.get('refresh_token', '')
-        bot.send_message(chat_id, f"Успішна авторизація! Отримано токени: Access - {access_token}, Refresh - {refresh_token}")
+        save_tokens_to_database(chat_id, access_token, refresh_token)
+        bot.send_message(chat_id, f"Успішна авторизація!")
+
+def save_tokens_to_database(chat_id, access_token, refresh_token):
+    # Підключення до бази даних
+    conn = sqlite3.connect('database.db')
+    cursor = conn.cursor()
+
+    # Збереження токенів у таблиці
+    cursor.execute('''
+        INSERT OR REPLACE INTO tokens (chat_id, access_token, refresh_token)
+        VALUES (?, ?, ?)
+    ''', (chat_id, access_token, refresh_token))
+
+    # Збереження змін у базі даних
+    conn.commit()
+
+    # Закриття підключення до бази даних
+    conn.close()
 
 # Flask-роут для обробки вхідних HTTP-запитів від Телеграм
 @app.route(f'/{bot_token}', methods=['POST'])
