@@ -9,7 +9,9 @@ cursor.execute('''
     CREATE TABLE IF NOT EXISTS tokens (
         chat_id INTEGER PRIMARY KEY,
         access_token TEXT,
-        refresh_token TEXT
+        refresh_token TEXT,
+        user_id INTEGER,
+        seen_tasks TEXT
     )
 ''')
 
