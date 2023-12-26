@@ -5,6 +5,8 @@ import concurrent.futures
 from flask import Flask, request, jsonify
 import requests
 import sqlite3
+import schedule
+import time
 
 bot_token = '6553192435:AAH79hmvkIbfz3Wj2uS3rk8ppsKRt_BqgO8'
 bot = telebot.TeleBot(bot_token)
@@ -84,6 +86,8 @@ def handle_auth_response(chat_id, response):
 
 def save_tokens_to_database(chat_id, access_token, refresh_token, user_id):
     access_token1, refresh_token1, user_id1, seen_tasks = get_tokens_from_database(chat_id)
+    if user_id==None:
+        user_id=user_id1
     # Підключення до бази даних
     conn = sqlite3.connect('database.db')
     cursor = conn.cursor()
@@ -127,6 +131,7 @@ def get_tokens_from_database(chat_id):
 def get_user_tasks(message):
     # Отримання ідентифікатора чату
     chat_id = message.chat.id
+    refresh_tokens(chat_id)
 
     # Отримання токенів користувача з бази даних
     access_token, refresh_token, user_id, seen_tasks = get_tokens_from_database(chat_id)
@@ -199,10 +204,10 @@ def update_seen_tasks(chat_id, last_seen_task_id):
 def get_new_user_tasks(message):
     # Отримання ідентифікатора чату
     chat_id = message.chat.id
+    refresh_tokens(chat_id)
 
     # Отримання токенів користувача з бази даних
     access_token, refresh_token, user_id, last_seen_task_id = get_tokens_from_database(chat_id)
-
     if access_token:
         # Виклик функції для отримання всіх завдань з API
         all_tasks = get_user_tasks_from_api(access_token)
@@ -250,10 +255,73 @@ def get_unseen_tasks(all_tasks, last_seen_task_id):
         last_seen_task_id = 0
         
         # Фільтрація завдань, які мають більший id, ніж останнє бачене
-        unseen_tasks = [task for task in all_tasks if task['id'] > last_seen_task_id]
+    unseen_tasks = [task for task in all_tasks if task['id'] > last_seen_task_id]
 
     return unseen_tasks
 
+def send_periodic_notifications():
+    try:
+        # Підключення до бази даних
+        conn = sqlite3.connect('database.db')
+        cursor = conn.cursor()
+
+        # Отримання усіх користувачів з токенами з бази даних
+        cursor.execute('SELECT chat_id FROM tokens WHERE access_token IS NOT NULL')
+        users_with_tokens = cursor.fetchall()
+
+        # Отримання усіх завдань для кожного користувача
+        for user in users_with_tokens:
+            chat_id = user[0]
+            refresh_tokens(chat_id)
+            access_token, _, _, last_seen_task_id = get_tokens_from_database(chat_id)
+            all_tasks = get_user_tasks_from_api(access_token)
+
+            # Отримання нових завдань, які користувач ще не бачив
+            unseen_tasks = get_unseen_tasks(all_tasks, last_seen_task_id)
+
+            if unseen_tasks:
+                bot.send_message(chat_id, "Нові завдання, які ви ще не бачили:")
+                for task in unseen_tasks:
+                    task_name = task.get('title', 'Невідома назва')
+                    task_description = task.get('description', '')
+                    if task_description != 'Task description (optional)':
+                        task_description_text = f"\nОпис: {task_description}"
+                    else:
+                        task_description_text = ''
+                    task_due_date = task.get('due_date', 'Без терміну виконання')
+                    task_text = f"Назва: {task_name}{task_description_text}\nТермін виконання: {task_due_date}"
+                    bot.send_message(chat_id, task_text)
+
+                # Оновлення бази даних інформацією про останнє завдання, яке користувач вже бачив
+                last_seen_task_id = str(all_tasks[-1]['id'])
+                update_seen_tasks(chat_id, last_seen_task_id)
+
+        # Закриття підключення до бази даних
+        conn.close()
+    except Exception as e:
+        print(f"Error in send_periodic_notifications: {str(e)}")
+        
+def refresh_tokens(chat_id):
+    refresh_url = 'https://vaabr5.pythonanywhere.com/api/user/token/refresh/'
+    _,refresh_token,_,_ =get_tokens_from_database(chat_id)
+    data = {'refresh_token': refresh_token}
+    try:
+        response = requests.post(refresh_url, json=data)
+        if response.status_code == 200:
+            new_tokens = response.json()
+            access_token = new_tokens.get('access', '')
+            save_tokens_to_database(chat_id, access_token, refresh_token, None)
+            return access_token
+        else:
+            print(f"Failed to refresh tokens. Status code: {response.status_code}")
+    except requests.RequestException as e:
+        print(f"Error refreshing tokens: {str(e)}")
+
+    return None
+
+
+
+    
 
 # Flask-роут для обробки вхідних HTTP-запитів від Телеграм
 @app.route(f'/{bot_token}', methods=['POST'])
@@ -273,7 +341,16 @@ def run_flask():
 def run_telegram_bot():
     bot.polling(none_stop=True)
 
+def run_schedule():
+    while True:
+        schedule.run_pending()
+        time.sleep(1)
+
+# Реєстрація функції в розкладі на виклик кожні 5 хвилин
+schedule.every(30).seconds.do(send_periodic_notifications)
+        
 # Запускаємо функції одночасно
 with concurrent.futures.ThreadPoolExecutor() as executor:
     executor.submit(run_flask)
     executor.submit(run_telegram_bot)
+    executor.submit(run_schedule)
