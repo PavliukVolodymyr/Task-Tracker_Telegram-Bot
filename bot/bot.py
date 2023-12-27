@@ -18,7 +18,7 @@ app = Flask(__name__)
 # Додаткові змінні для зберігання імені користувача та паролю
 username_storage = {}
 
-@bot.message_handler(commands=['start', 'help'])
+@bot.message_handler(commands=['start'])
 def send_welcome(message):
     # Створення inline клавіатури з кнопкою "Авторизація"
     markup = types.InlineKeyboardMarkup()
@@ -26,7 +26,44 @@ def send_welcome(message):
     markup.add(item)
 
     # Відправлення повідомлення з inline клавіатурою
-    bot.send_message(message.chat.id, "Привіт! Я твій телеграм-бот для отримання завдань з Task trecker. Для початку треба авторизуватися", reply_markup=markup)
+    bot.send_message(message.chat.id, "Привіт! Я твій телеграм-бот для отримання завдань з Task tracker. Для початку треба авторизуватися", reply_markup=markup)
+
+@bot.message_handler(commands=['help'])
+def show_help(message):
+    help_text = (
+        "Доступні команди:\n"
+        "/start - початок використання бота та авторизація\n"
+        "/tasks - перегляд ваших завдань\n"
+        "/new - перегляд нових завдань\n"
+        "/help - вивід цього повідомлення"
+    )
+    bot.send_message(message.chat.id, help_text)
+
+def logout_user(chat_id):
+    try:
+        # Підключення до бази даних
+        conn = sqlite3.connect('database.db')
+        cursor = conn.cursor()
+
+        # Видалення токенів користувача з бази даних
+        cursor.execute('DELETE FROM tokens WHERE chat_id=?', (chat_id,))
+        conn.commit()
+
+        # Закриття підключення до бази даних
+        conn.close()
+
+    except sqlite3.Error as e:
+        print(f"SQLite error: {str(e)}")
+
+@bot.message_handler(commands=['logout'])
+def handle_logout(message):
+    chat_id = message.chat.id
+
+    # Виклик функції для виходу користувача
+    logout_user(chat_id)
+
+    # Відправлення повідомлення про вихід
+    bot.send_message(chat_id, "Ви вийшли з системи. Введіть /start для повторної авторизації.")
 
 # Обробник для натискання inline кнопки "Авторизація"
 @bot.callback_query_handler(func=lambda call: call.data == 'auth_button')
@@ -85,24 +122,36 @@ def handle_auth_response(chat_id, response):
 
 
 def save_tokens_to_database(chat_id, access_token, refresh_token, user_id):
-    access_token1, refresh_token1, user_id1, seen_tasks = get_tokens_from_database(chat_id)
-    if user_id==None:
-        user_id=user_id1
-    # Підключення до бази даних
-    conn = sqlite3.connect('database.db')
-    cursor = conn.cursor()
+    try:
+        # Підключення до бази даних
+        conn = sqlite3.connect('database.db')
+        cursor = conn.cursor()
 
-    # Збереження токенів та ID користувача у таблиці
-    cursor.execute('''
-        INSERT OR REPLACE INTO tokens (chat_id, access_token, refresh_token, user_id, seen_tasks)
-        VALUES (?, ?, ?, ?, ?)
-    ''', (chat_id, access_token, refresh_token, user_id, seen_tasks))
+        # Перевірка, чи існує запис з вказаним chat_id
+        cursor.execute('SELECT * FROM tokens WHERE chat_id=?', (chat_id,))
+        existing_record = cursor.fetchone()
 
-    # Збереження змін у базі даних
-    conn.commit()
+        if existing_record:
+            # Виконання UPDATE
+            cursor.execute('''
+                UPDATE tokens 
+                SET access_token=?, refresh_token=?, user_id=?
+                WHERE chat_id=?
+            ''', (access_token, refresh_token, user_id, chat_id))
+        else:
+            # Виконання INSERT, оскільки запис відсутній
+            cursor.execute('''
+                INSERT INTO tokens (chat_id, access_token, refresh_token, user_id)
+                VALUES (?, ?, ?, ?)
+            ''', (chat_id, access_token, refresh_token, user_id))
 
-    # Закриття підключення до бази даних
-    conn.close()
+        # Збереження змін у базі даних
+        conn.commit()
+    except sqlite3.Error as e:
+        print(f"SQLite error: {str(e)}")
+    finally:
+        # Закриття підключення до бази даних навіть у випадку винятку
+        conn.close()
 
 # Функція для отримання токенів користувача з бази даних
 def get_tokens_from_database(chat_id):
@@ -263,7 +312,7 @@ def send_periodic_notifications():
     try:
         # Підключення до бази даних
         conn = sqlite3.connect('database.db')
-        cursor = conn.cursor()
+        cursor = conn.cursor() 
 
         # Отримання усіх користувачів з токенами з бази даних
         cursor.execute('SELECT chat_id FROM tokens WHERE access_token IS NOT NULL')
@@ -303,14 +352,14 @@ def send_periodic_notifications():
         
 def refresh_tokens(chat_id):
     refresh_url = 'https://vaabr5.pythonanywhere.com/api/user/token/refresh/'
-    _,refresh_token,_,_ =get_tokens_from_database(chat_id)
+    _,refresh_token,user_id,_ =get_tokens_from_database(chat_id)
     data = {'refresh_token': refresh_token}
     try:
         response = requests.post(refresh_url, json=data)
         if response.status_code == 200:
             new_tokens = response.json()
             access_token = new_tokens.get('access', '')
-            save_tokens_to_database(chat_id, access_token, refresh_token, None)
+            save_tokens_to_database(chat_id, access_token, refresh_token, user_id)
             return access_token
         else:
             print(f"Failed to refresh tokens. Status code: {response.status_code}")
